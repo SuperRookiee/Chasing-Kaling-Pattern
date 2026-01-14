@@ -1,4 +1,4 @@
-# Karing Gauge Helper
+# Kaling Gauge Helper
 
 ## 프로젝트 개요
 
