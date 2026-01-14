@@ -313,6 +313,7 @@ class App(tk.Tk):
         self._phase1_done: set[str] = set()
         self._phase1_current: Optional[str] = self.phase_var.get()
         self._phase1_next_choice: Optional[str] = None
+        self._phase_guard = False
         self._last_good_gauge: Optional[Gauge] = None
         self._last_good_laser: Optional[str] = None
         self._pending_gauge: Optional[Gauge] = None  # [PATCH2]
@@ -401,6 +402,7 @@ class App(tk.Tk):
             width=12,
         )
         self.phase1_next_combo.pack(side=tk.LEFT, padx=6)
+        self.phase1_next_combo.bind("<<ComboboxSelected>>", self._on_next_selected)
         self.phase1_move_button = tk.Button(
             next_frame, text="선택한 페이즈로 이동", command=self.move_to_next_phase1
         )
@@ -480,6 +482,7 @@ class App(tk.Tk):
         if self.running:
             return
         self._phase1_current = self.phase_var.get()
+        self._refresh_phase1_next_options()
         self.running = True
         self._schedule_loop()
 
@@ -587,7 +590,8 @@ class App(tk.Tk):
         self.mode_label.set(f"모드: {mode_tag}  |  현재: {phase}")
         overlay_phase = f"{phase} [{mode_tag}]"
         if self._phase1_next_choice:
-            overlay_phase = f"{overlay_phase} → NEXT: {self._phase1_next_choice}"
+            next_label = PHASE1_LABELS.get(self._phase1_next_choice, self._phase1_next_choice)
+            overlay_phase = f"{overlay_phase} → NEXT: {next_label}"
         self.overlay.update_text(overlay_phase, display_gauge, laser)  # [PATCH2]
         self._schedule_loop()
 
@@ -656,16 +660,26 @@ class App(tk.Tk):
         return Image.fromarray(frame)
 
     def _on_phase_change(self, *_args):
-        self._phase1_current = self.phase_var.get()
+        if self._phase_guard:
+            return
+        phase = self.phase_var.get()
+        if phase in self._phase1_done:
+            messagebox.showwarning("경고", "이미 완료된 흉수는 다시 선택할 수 없습니다.")
+            remaining = [p for p in PHASE1_LIST if p not in self._phase1_done]
+            fallback = remaining[0] if remaining else self._phase1_current
+            if fallback and fallback != phase:
+                self._phase_guard = True
+                self.phase_var.set(fallback)
+                self._phase_guard = False
+                phase = fallback
+        self._phase1_current = phase
         self._update_phase1_status()
 
     def reset_phase_progress(self):
         self._phase1_done = set()
         self._phase1_next_choice = None
         self._phase1_current = self.phase_var.get()
-        self.phase1_next_var.set("-")
-        self.phase1_next_combo.config(values=["-"])
-        self.phase1_move_button.config(state=tk.DISABLED)
+        self._refresh_phase1_next_options()
         for key in ("G", "D", "H"):
             self._history[key].clear()
         self._pending_gauge = None
@@ -681,15 +695,21 @@ class App(tk.Tk):
             messagebox.showinfo("알림", "이미 완료 처리된 흉수입니다.")
             return
         self._phase1_done.add(phase)
-        self._update_phase1_status()
         self._refresh_phase1_next_options()
+        self._update_phase1_status()
 
     def move_to_next_phase1(self):
         chosen_phase = self.phase1_next_var.get()
         if chosen_phase in ("", "-"):
             return
-        self._phase1_next_choice = chosen_phase
         self.phase_var.set(chosen_phase)
+        self._update_phase1_status()
+
+    def _on_next_selected(self, _event=None):
+        chosen_phase = self.phase1_next_var.get()
+        if chosen_phase in ("", "-"):
+            return
+        self._phase1_next_choice = chosen_phase
         self._update_phase1_status()
 
     def _refresh_phase1_next_options(self):
@@ -697,15 +717,18 @@ class App(tk.Tk):
         if not remaining:
             self.phase1_next_combo.config(values=["-"])
             self.phase1_next_var.set("-")
+            self._phase1_next_choice = None
             self.phase1_move_button.config(state=tk.DISABLED)
             messagebox.showinfo("알림", "1페 흉수 3개 완료. 2페로 진행하세요.")
             return
         self.phase1_next_combo.config(values=remaining)
         if len(remaining) == 1:
             self.phase1_next_var.set(remaining[0])
+            self._phase1_next_choice = remaining[0]
         else:
             if self.phase1_next_var.get() not in remaining:
                 self.phase1_next_var.set(remaining[0])
+            self._phase1_next_choice = self.phase1_next_var.get()
         self.phase1_move_button.config(state=tk.NORMAL)
 
     def _update_phase1_status(self):
