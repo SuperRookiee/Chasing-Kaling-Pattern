@@ -299,10 +299,13 @@ class App(tk.Tk):
         self.gauge_label = tk.StringVar(value="G: -  D: -  H: -")
         self.laser_label = tk.StringVar(value="추천 실: -")
         self.stable_var = tk.BooleanVar(value=True)
+        self._phase1_count = 0
+        self._last_phase: Optional[str] = None
         self._last_good_gauge: Optional[Gauge] = None
         self._last_good_laser: Optional[str] = None
         self._pending_gauge: Optional[Gauge] = None  # [PATCH2]
 
+        self.phase_var.trace_add("write", self._on_phase_change)
         self._build_ui()
         self.overlay = Overlay(self, self.roi_data.get("overlay_pos", {"x": 200, "y": 200}))
         self.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -349,6 +352,11 @@ class App(tk.Tk):
         ).pack(fill=tk.X, pady=3)
         tk.Button(button_frame, text="Start", command=self.start).pack(fill=tk.X, pady=3)
         tk.Button(button_frame, text="Stop", command=self.stop).pack(fill=tk.X, pady=3)
+        tk.Button(
+            button_frame,
+            text="페이즈 리셋(1페 카운트 초기화)",
+            command=self.reset_phase_progress,
+        ).pack(fill=tk.X, pady=3)
 
         status_frame = tk.LabelFrame(self, text="상태")
         status_frame.pack(fill=tk.BOTH, expand=True, padx=12, pady=10)
@@ -481,9 +489,13 @@ class App(tk.Tk):
                 display_gauge = gauge  # [PATCH2]
                 try:  # [PATCH2]
                     stable_mode = self.stable_var.get()  # [PATCH2]
-                    prep_target = (
-                        PREP_TARGETS.get(phase) if not stable_mode else None  # [PATCH2]
-                    )
+                    prep_target = None
+                    if (
+                        not stable_mode
+                        and phase in PREP_TARGETS
+                        and self._phase1_count < 3
+                    ):
+                        prep_target = PREP_TARGETS[phase]
                     if stable_mode and is_stable(gauge):  # [PATCH2]
                         # [PATCH] 안정 상태에서는 추천 계산을 건너뛰고 HOLD 표시
                         self._last_good_laser = "HOLD"  # [PATCH2]
@@ -509,7 +521,8 @@ class App(tk.Tk):
         else:  # [PATCH2]
             self.gauge_label.set("G: -  D: -  H: -")  # [PATCH2]
         self.laser_label.set(f"추천 실: {laser}")  # [PATCH2]
-        self.overlay.update_text(phase, display_gauge, laser)  # [PATCH2]
+        mode_tag = "STABLE" if self.stable_var.get() else "PREP"
+        self.overlay.update_text(f"{phase} [{mode_tag}]", display_gauge, laser)  # [PATCH2]
         self._schedule_loop()
 
     def _read_gauge(self) -> Optional[Gauge]:
@@ -575,6 +588,22 @@ class App(tk.Tk):
             frame = np.array(sct.grab(monitor))
         frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2RGB)
         return Image.fromarray(frame)
+
+    def _on_phase_change(self, *_args):
+        phase = self.phase_var.get()
+        if phase == self._last_phase:
+            return
+        self._last_phase = phase
+        if phase in ("1-HONDON", "1-DOOL", "1-GUNGGI"):
+            self._phase1_count += 1
+
+    def reset_phase_progress(self):
+        self._phase1_count = 0
+        self._last_phase = None
+        for key in ("G", "D", "H"):
+            self._history[key].clear()
+        self._pending_gauge = None
+        self.laser_label.set("추천 실: 페이즈 리셋됨")
 
     def _on_close(self):
         # 종료 시 상태 저장 및 정리
