@@ -283,7 +283,7 @@ class App(tk.Tk):
         # [PATCH] OCR/레이저 안정화를 위한 마지막 정상값 저장
         super().__init__()
         self.title("Kaling Gauge Helper")  # [PATCH2]
-        self.geometry("460x360")
+        self.geometry("520x430")
         self.resizable(False, False)
 
         self.roi_data = load_roi_data()
@@ -298,9 +298,11 @@ class App(tk.Tk):
         self.phase_var = tk.StringVar(value="1-HONDON")
         self.gauge_label = tk.StringVar(value="G: -  D: -  H: -")
         self.laser_label = tk.StringVar(value="추천 실: -")
+        self.mode_label = tk.StringVar(value="모드: STABLE  |  1페 카운트: 0/3")
         self.stable_var = tk.BooleanVar(value=True)
         self._phase1_count = 0
         self._last_phase: Optional[str] = None
+        self._phase_tracking_started = False
         self._last_good_gauge: Optional[Gauge] = None
         self._last_good_laser: Optional[str] = None
         self._pending_gauge: Optional[Gauge] = None  # [PATCH2]
@@ -313,7 +315,7 @@ class App(tk.Tk):
     def _build_ui(self):
         # 메인 UI 구성
         phase_frame = tk.LabelFrame(self, text="페이즈/방")
-        phase_frame.pack(fill=tk.X, padx=12, pady=10)
+        phase_frame.pack(fill=tk.X, padx=12, pady=(10, 6))
 
         phases = [
             ("1-혼돈", "1-HONDON"),
@@ -322,50 +324,67 @@ class App(tk.Tk):
             ("2", "2"),
             ("3", "3"),
         ]
-        for text, value in phases:
+        for idx, (text, value) in enumerate(phases):
             rb = tk.Radiobutton(
                 phase_frame,
                 text=text,
                 value=value,
                 variable=self.phase_var,
                 indicatoron=0,
-                width=8,
-                padx=8,
+                width=10,
+                padx=6,
                 pady=4,
             )
-            rb.pack(side=tk.LEFT, padx=4, pady=6)
+            row = 0 if idx < 3 else 1
+            col = idx if idx < 3 else idx - 3
+            rb.grid(row=row, column=col, padx=6, pady=4, sticky="ew")
+        for col in range(3):
+            phase_frame.grid_columnconfigure(col, weight=1)
+
+        stable_frame = tk.Frame(self)
+        stable_frame.pack(fill=tk.X, padx=12, pady=(0, 8))
 
         tk.Checkbutton(
-            phase_frame,
+            stable_frame,
             text="Stable 모드 (500±tol이면 HOLD)",
             variable=self.stable_var,
-        ).pack(side=tk.LEFT, padx=8, pady=6)
+        ).pack(side=tk.LEFT, padx=4)
 
-        button_frame = tk.Frame(self)
-        button_frame.pack(fill=tk.X, padx=12, pady=6)
+        setting_frame = tk.LabelFrame(self, text="설정")
+        setting_frame.pack(fill=tk.X, padx=12, pady=6)
+        action_frame = tk.LabelFrame(self, text="실행")
+        action_frame.pack(fill=tk.X, padx=12, pady=6)
 
-        tk.Button(button_frame, text="게이지 ROI 지정(전체)", command=self.set_gauge_roi).pack(
-            fill=tk.X, pady=3
+        tk.Button(setting_frame, text="게이지 ROI 지정(전체)", command=self.set_gauge_roi).pack(
+            fill=tk.X, padx=8, pady=4
         )
         tk.Button(
-            button_frame, text="숫자 ROI 지정(G→D→H)", command=self.set_digit_rois
-        ).pack(fill=tk.X, pady=3)
-        tk.Button(button_frame, text="Start", command=self.start).pack(fill=tk.X, pady=3)
-        tk.Button(button_frame, text="Stop", command=self.stop).pack(fill=tk.X, pady=3)
+            setting_frame, text="숫자 ROI 지정(G→D→H)", command=self.set_digit_rois
+        ).pack(fill=tk.X, padx=8, pady=4)
+        tk.Button(action_frame, text="Start", command=self.start).pack(
+            fill=tk.X, padx=8, pady=4
+        )
+        tk.Button(action_frame, text="Stop", command=self.stop).pack(
+            fill=tk.X, padx=8, pady=4
+        )
         tk.Button(
-            button_frame,
+            action_frame,
             text="페이즈 리셋(1페 카운트 초기화)",
             command=self.reset_phase_progress,
-        ).pack(fill=tk.X, pady=3)
+        ).pack(fill=tk.X, padx=8, pady=4)
 
         status_frame = tk.LabelFrame(self, text="상태")
-        status_frame.pack(fill=tk.BOTH, expand=True, padx=12, pady=10)
+        status_frame.pack(fill=tk.BOTH, expand=True, padx=12, pady=8)
 
         tk.Label(status_frame, textvariable=self.gauge_label, font=("Arial", 12)).pack(
             anchor=tk.W, padx=10, pady=8
         )
-        tk.Label(status_frame, textvariable=self.laser_label, font=("Arial", 12, "bold")).pack(
-            anchor=tk.W, padx=10, pady=6
+        self.laser_value_label = tk.Label(
+            status_frame, textvariable=self.laser_label, font=("Arial", 13, "bold")
+        )
+        self.laser_value_label.pack(anchor=tk.W, padx=10, pady=6)
+        tk.Label(status_frame, textvariable=self.mode_label, font=("Arial", 10)).pack(
+            anchor=tk.W, padx=10, pady=(2, 8)
         )
 
     def set_gauge_roi(self):
@@ -423,6 +442,8 @@ class App(tk.Tk):
             return
         if self.running:
             return
+        self._phase_tracking_started = True
+        self._last_phase = self.phase_var.get()
         self.running = True
         self._schedule_loop()
 
@@ -520,9 +541,15 @@ class App(tk.Tk):
             )  # [PATCH2]
         else:  # [PATCH2]
             self.gauge_label.set("G: -  D: -  H: -")  # [PATCH2]
-        self.laser_label.set(f"추천 실: {laser}")  # [PATCH2]
+        laser_text = f"추천 실: {laser}"
+        self.laser_label.set(laser_text)  # [PATCH2]
+        color_map = {"RED": "#e53935", "GREEN": "#43a047", "YELLOW": "#fbc02d"}
+        self.laser_value_label.config(fg=color_map.get(laser, "black"))
         mode_tag = "STABLE" if self.stable_var.get() else "PREP"
-        self.overlay.update_text(f"{phase} [{mode_tag}]", display_gauge, laser)  # [PATCH2]
+        is_phase1 = phase in ("1-HONDON", "1-DOOL", "1-GUNGGI")
+        p1_suffix = f" P1:{self._phase1_count}" if is_phase1 else ""
+        self.mode_label.set(f"모드: {mode_tag}  |  1페 카운트: {self._phase1_count}/3")
+        self.overlay.update_text(f"{phase} [{mode_tag}]{p1_suffix}", display_gauge, laser)  # [PATCH2]
         self._schedule_loop()
 
     def _read_gauge(self) -> Optional[Gauge]:
@@ -590,6 +617,8 @@ class App(tk.Tk):
         return Image.fromarray(frame)
 
     def _on_phase_change(self, *_args):
+        if not self._phase_tracking_started:
+            return
         phase = self.phase_var.get()
         if phase == self._last_phase:
             return
@@ -599,11 +628,13 @@ class App(tk.Tk):
 
     def reset_phase_progress(self):
         self._phase1_count = 0
-        self._last_phase = None
+        self._last_phase = self.phase_var.get()
         for key in ("G", "D", "H"):
             self._history[key].clear()
         self._pending_gauge = None
-        self.laser_label.set("추천 실: 페이즈 리셋됨")
+        mode_tag = "STABLE" if self.stable_var.get() else "PREP"
+        self.mode_label.set(f"모드: {mode_tag}  |  1페 카운트: {self._phase1_count}/3")
+        messagebox.showinfo("알림", "1페 카운트가 초기화되었습니다.")
 
     def _on_close(self):
         # 종료 시 상태 저장 및 정리
