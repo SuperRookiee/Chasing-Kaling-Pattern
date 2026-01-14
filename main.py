@@ -265,6 +265,7 @@ class Overlay(tk.Toplevel):
 class App(tk.Tk):
     def __init__(self):
         # 메인 애플리케이션 초기화
+        # [PATCH] OCR/레이저 안정화를 위한 마지막 정상값 저장
         super().__init__()
         self.title("Karing Gauge Helper")
         self.geometry("460x360")
@@ -282,6 +283,8 @@ class App(tk.Tk):
         self.phase_var = tk.StringVar(value="1-HONDON")
         self.gauge_label = tk.StringVar(value="G: -  D: -  H: -")
         self.laser_label = tk.StringVar(value="추천 실: -")
+        self._last_good_gauge: Optional[Gauge] = None
+        self._last_good_laser: Optional[str] = None
 
         self._build_ui()
         self.overlay = Overlay(self, self.roi_data.get("overlay_pos", {"x": 200, "y": 200}))
@@ -401,29 +404,44 @@ class App(tk.Tk):
 
     def _schedule_loop(self):
         # 다음 프레임 처리 예약
+        # [PATCH] 업데이트 주기를 300ms로 단축
         if not self.running:
             return
-        self._loop_after = self.after(400, self._process_frame)
+        self._loop_after = self.after(300, self._process_frame)
 
     def _process_frame(self):
         # OCR 수행 및 결과 반영
+        # [PATCH] OCR/레이저 안정화 및 HOLD 처리
         if not self.running:
             return
         gauge = self._read_gauge()
         phase = self.phase_var.get()
-        laser = "-"
+        display_gauge = self._last_good_gauge
         if gauge:
-            if is_stable(gauge):
-                laser = "HOLD"
-            else:
-                laser = choose_best_laser(
-                    gauge,
-                    X_TABLE[phase],
-                    allowed_colors=PHASE_ALLOWED_COLORS[phase],
-                )
-            self.gauge_label.set(f"G: {gauge.G}  D: {gauge.D}  H: {gauge.H}")
-            self.laser_label.set(f"추천 실: {laser}")
-        self.overlay.update_text(phase, gauge, laser)
+            self._last_good_gauge = gauge
+            display_gauge = gauge
+            try:
+                if is_stable(gauge):
+                    # [PATCH] 안정 상태에서는 추천 계산을 건너뛰고 HOLD 표시
+                    self._last_good_laser = "HOLD"
+                else:
+                    self._last_good_laser = choose_best_laser(
+                        gauge,
+                        X_TABLE[phase],
+                        allowed_colors=PHASE_ALLOWED_COLORS[phase],
+                    )
+            except Exception:
+                # [PATCH] 계산 실패 시 마지막 정상 레이저 유지
+                pass
+        laser = self._last_good_laser or "-"
+        if display_gauge:
+            self.gauge_label.set(
+                f"G: {display_gauge.G}  D: {display_gauge.D}  H: {display_gauge.H}"
+            )
+        else:
+            self.gauge_label.set("G: -  D: -  H: -")
+        self.laser_label.set(f"추천 실: {laser}")
+        self.overlay.update_text(phase, display_gauge, laser)
         self._schedule_loop()
 
     def _read_gauge(self) -> Optional[Gauge]:
