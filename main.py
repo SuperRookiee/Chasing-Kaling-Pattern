@@ -268,7 +268,7 @@ class App(tk.Tk):
         # 메인 애플리케이션 초기화
         # [PATCH] OCR/레이저 안정화를 위한 마지막 정상값 저장
         super().__init__()
-        self.title("Karing Gauge Helper")
+        self.title("Kaling Gauge Helper")  # [PATCH2]
         self.geometry("460x360")
         self.resizable(False, False)
 
