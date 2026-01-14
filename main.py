@@ -83,22 +83,32 @@ def score(s: Gauge):
     return (min_margin, -boundary, -dist)
 
 
+def score_to_target(s: Gauge, target: Gauge):
+    # 목표 게이지에 가까울수록 높은 점수
+    min_margin = min(margin(s.G), margin(s.D), margin(s.H))
+    boundary = int(is_fixed(s.G)) + int(is_fixed(s.D)) + int(is_fixed(s.H))
+    dist = (s.G - target.G) ** 2 + (s.D - target.D) ** 2 + (s.H - target.H) ** 2
+    return (min_margin, -boundary, -dist)
+
+
 def choose_best_laser(
     state: Gauge,
     x: int,
     depth: int = 2,
     allowed_colors: Optional[Tuple[Color, ...]] = None,
+    target: Optional[Gauge] = None,
 ) -> Color:
     # lookahead 기반 최적 실 색상 선택
     colors = allowed_colors or ("RED", "GREEN", "YELLOW")
     best: Color = colors[0]
     best_key = None
+    score_func = score if target is None else lambda s: score_to_target(s, target)
     for c1 in colors:
         s1 = apply_laser(state, c1, x)
         if depth > 1:
-            key = max(score(apply_laser(s1, c2, x)) for c2 in colors)
+            key = max(score_func(apply_laser(s1, c2, x)) for c2 in colors)
         else:
-            key = score(s1)
+            key = score_func(s1)
         if best_key is None or key > best_key:
             best_key = key
             best = c1
@@ -119,6 +129,10 @@ PHASE_ALLOWED_COLORS: Dict[str, Tuple[Color, ...]] = {
     "1-GUNGGI": ("GREEN", "YELLOW"),
     "2": ("RED", "GREEN", "YELLOW"),
     "3": ("RED", "GREEN", "YELLOW"),
+}
+PREP_TARGETS: Dict[str, Gauge] = {
+    "1-HONDON": Gauge(G=900, D=100, H=500),
+    "1-DOOL": Gauge(G=100, D=500, H=900),
 }
 
 ROI_PATH = "roi_config.json"
@@ -284,6 +298,7 @@ class App(tk.Tk):
         self.phase_var = tk.StringVar(value="1-HONDON")
         self.gauge_label = tk.StringVar(value="G: -  D: -  H: -")
         self.laser_label = tk.StringVar(value="추천 실: -")
+        self.stable_var = tk.BooleanVar(value=True)
         self._last_good_gauge: Optional[Gauge] = None
         self._last_good_laser: Optional[str] = None
         self._pending_gauge: Optional[Gauge] = None  # [PATCH2]
@@ -316,6 +331,12 @@ class App(tk.Tk):
                 pady=4,
             )
             rb.pack(side=tk.LEFT, padx=4, pady=6)
+
+        tk.Checkbutton(
+            phase_frame,
+            text="Stable 모드 (500±tol이면 HOLD)",
+            variable=self.stable_var,
+        ).pack(side=tk.LEFT, padx=8, pady=6)
 
         button_frame = tk.Frame(self)
         button_frame.pack(fill=tk.X, padx=12, pady=6)
@@ -459,7 +480,11 @@ class App(tk.Tk):
                 self._last_good_gauge = gauge  # [PATCH2]
                 display_gauge = gauge  # [PATCH2]
                 try:  # [PATCH2]
-                    if is_stable(gauge):  # [PATCH2]
+                    stable_mode = self.stable_var.get()  # [PATCH2]
+                    prep_target = (
+                        PREP_TARGETS.get(phase) if not stable_mode else None  # [PATCH2]
+                    )
+                    if stable_mode and is_stable(gauge):  # [PATCH2]
                         # [PATCH] 안정 상태에서는 추천 계산을 건너뛰고 HOLD 표시
                         self._last_good_laser = "HOLD"  # [PATCH2]
                     else:  # [PATCH2]
@@ -467,6 +492,7 @@ class App(tk.Tk):
                             gauge,  # [PATCH2]
                             X_TABLE[phase],  # [PATCH2]
                             allowed_colors=PHASE_ALLOWED_COLORS[phase],  # [PATCH2]
+                            target=prep_target,  # [PATCH2]
                         )  # [PATCH2]
                 except Exception:  # [PATCH2]
                     # [PATCH] 계산 실패 시 마지막 정상 레이저 유지
