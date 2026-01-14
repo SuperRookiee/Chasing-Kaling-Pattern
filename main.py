@@ -33,6 +33,17 @@ def is_fixed(v: int) -> bool:
     return v == 0 or v == 1000
 
 
+def is_stable(gauge: Gauge, tol: int = 20) -> bool:
+    # 안정 상태 여부 확인 (500 ± tol)
+    lower = 500 - tol
+    upper = 500 + tol
+    return (
+        lower <= gauge.G <= upper
+        and lower <= gauge.D <= upper
+        and lower <= gauge.H <= upper
+    )
+
+
 def clamp(v: int) -> int:
     # 값을 0~1000 범위로 제한
     return max(0, min(1000, v))
@@ -402,11 +413,14 @@ class App(tk.Tk):
         phase = self.phase_var.get()
         laser = "-"
         if gauge:
-            laser = choose_best_laser(
-                gauge,
-                X_TABLE[phase],
-                allowed_colors=PHASE_ALLOWED_COLORS[phase],
-            )
+            if is_stable(gauge):
+                laser = "HOLD"
+            else:
+                laser = choose_best_laser(
+                    gauge,
+                    X_TABLE[phase],
+                    allowed_colors=PHASE_ALLOWED_COLORS[phase],
+                )
             self.gauge_label.set(f"G: {gauge.G}  D: {gauge.D}  H: {gauge.H}")
             self.laser_label.set(f"추천 실: {laser}")
         self.overlay.update_text(phase, gauge, laser)
