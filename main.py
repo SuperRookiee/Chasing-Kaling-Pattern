@@ -17,6 +17,7 @@ Color = Literal["RED", "GREEN", "YELLOW"]
 TESSERACT_CMD = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 MONITOR_INDEX = 1
 OCR_HISTORY = 5
+DEBUG_OCR = False  # [PATCH2]
 
 pytesseract.pytesseract.tesseract_cmd = TESSERACT_CMD
 
@@ -31,6 +32,17 @@ class Gauge:
 def is_fixed(v: int) -> bool:
     # 값이 0 또는 1000인지 확인
     return v == 0 or v == 1000
+
+
+def is_stable(gauge: Gauge, tol: int = 20) -> bool:
+    # 안정 상태 여부 확인 (500 ± tol)
+    lower = 500 - tol
+    upper = 500 + tol
+    return (
+        lower <= gauge.G <= upper
+        and lower <= gauge.D <= upper
+        and lower <= gauge.H <= upper
+    )
 
 
 def clamp(v: int) -> int:
@@ -254,8 +266,9 @@ class Overlay(tk.Toplevel):
 class App(tk.Tk):
     def __init__(self):
         # 메인 애플리케이션 초기화
+        # [PATCH] OCR/레이저 안정화를 위한 마지막 정상값 저장
         super().__init__()
-        self.title("Karing Gauge Helper")
+        self.title("Kaling Gauge Helper")  # [PATCH2]
         self.geometry("460x360")
         self.resizable(False, False)
 
@@ -271,6 +284,9 @@ class App(tk.Tk):
         self.phase_var = tk.StringVar(value="1-HONDON")
         self.gauge_label = tk.StringVar(value="G: -  D: -  H: -")
         self.laser_label = tk.StringVar(value="추천 실: -")
+        self._last_good_gauge: Optional[Gauge] = None
+        self._last_good_laser: Optional[str] = None
+        self._pending_gauge: Optional[Gauge] = None  # [PATCH2]
 
         self._build_ui()
         self.overlay = Overlay(self, self.roi_data.get("overlay_pos", {"x": 200, "y": 200}))
@@ -390,30 +406,89 @@ class App(tk.Tk):
 
     def _schedule_loop(self):
         # 다음 프레임 처리 예약
+        # [PATCH] 업데이트 주기를 300ms로 단축
         if not self.running:
             return
-        self._loop_after = self.after(400, self._process_frame)
+        self._loop_after = self.after(300, self._process_frame)
 
     def _process_frame(self):
         # OCR 수행 및 결과 반영
+        # [PATCH] OCR/레이저 안정화 및 HOLD 처리
+        # [PATCH2] 급변 필터/연속 확인 및 history 누적 정책 적용
         if not self.running:
             return
-        gauge = self._read_gauge()
-        phase = self.phase_var.get()
-        laser = "-"
-        if gauge:
-            laser = choose_best_laser(
-                gauge,
-                X_TABLE[phase],
-                allowed_colors=PHASE_ALLOWED_COLORS[phase],
-            )
-            self.gauge_label.set(f"G: {gauge.G}  D: {gauge.D}  H: {gauge.H}")
-            self.laser_label.set(f"추천 실: {laser}")
-        self.overlay.update_text(phase, gauge, laser)
+        raw_gauge = self._read_gauge()  # [PATCH2]
+        phase = self.phase_var.get()  # [PATCH2]
+        display_gauge = self._last_good_gauge  # [PATCH2]
+        ignored_spike = False  # [PATCH2]
+        if raw_gauge:  # [PATCH2]
+            if DEBUG_OCR:  # [PATCH2]
+                print(  # [PATCH2]
+                    f"[OCR] raw: G={raw_gauge.G} D={raw_gauge.D} H={raw_gauge.H}"  # [PATCH2]
+                )  # [PATCH2]
+            accepted_gauge = None  # [PATCH2]
+            if self._last_good_gauge is None:  # [PATCH2]
+                accepted_gauge = raw_gauge  # [PATCH2]
+                self._pending_gauge = None  # [PATCH2]
+            else:  # [PATCH2]
+                deltas = (  # [PATCH2]
+                    abs(raw_gauge.G - self._last_good_gauge.G),  # [PATCH2]
+                    abs(raw_gauge.D - self._last_good_gauge.D),  # [PATCH2]
+                    abs(raw_gauge.H - self._last_good_gauge.H),  # [PATCH2]
+                )  # [PATCH2]
+                if any(delta > 250 for delta in deltas):  # [PATCH2]
+                    if self._pending_gauge == raw_gauge:  # [PATCH2]
+                        accepted_gauge = raw_gauge  # [PATCH2]
+                        self._pending_gauge = None  # [PATCH2]
+                    else:  # [PATCH2]
+                        self._pending_gauge = raw_gauge  # [PATCH2]
+                        ignored_spike = True  # [PATCH2]
+                else:  # [PATCH2]
+                    accepted_gauge = raw_gauge  # [PATCH2]
+                    self._pending_gauge = None  # [PATCH2]
+            if accepted_gauge:  # [PATCH2]
+                for key in ("G", "D", "H"):  # [PATCH2]
+                    self._history[key].append(getattr(accepted_gauge, key))  # [PATCH2]
+                median_values = {  # [PATCH2]
+                    key: int(np.median(list(self._history[key])))  # [PATCH2]
+                    for key in ("G", "D", "H")  # [PATCH2]
+                }  # [PATCH2]
+                gauge = Gauge(  # [PATCH2]
+                    median_values["G"], median_values["D"], median_values["H"]  # [PATCH2]
+                )  # [PATCH2]
+                self._last_good_gauge = gauge  # [PATCH2]
+                display_gauge = gauge  # [PATCH2]
+                try:  # [PATCH2]
+                    if is_stable(gauge):  # [PATCH2]
+                        # [PATCH] 안정 상태에서는 추천 계산을 건너뛰고 HOLD 표시
+                        self._last_good_laser = "HOLD"  # [PATCH2]
+                    else:  # [PATCH2]
+                        self._last_good_laser = choose_best_laser(  # [PATCH2]
+                            gauge,  # [PATCH2]
+                            X_TABLE[phase],  # [PATCH2]
+                            allowed_colors=PHASE_ALLOWED_COLORS[phase],  # [PATCH2]
+                        )  # [PATCH2]
+                except Exception:  # [PATCH2]
+                    # [PATCH] 계산 실패 시 마지막 정상 레이저 유지
+                    pass  # [PATCH2]
+            if DEBUG_OCR:  # [PATCH2]
+                print(  # [PATCH2]
+                    f"[OCR] accepted: {display_gauge} ignored_spike={ignored_spike}"  # [PATCH2]
+                )  # [PATCH2]
+        laser = self._last_good_laser or "-"  # [PATCH2]
+        if display_gauge:  # [PATCH2]
+            self.gauge_label.set(  # [PATCH2]
+                f"G: {display_gauge.G}  D: {display_gauge.D}  H: {display_gauge.H}"  # [PATCH2]
+            )  # [PATCH2]
+        else:  # [PATCH2]
+            self.gauge_label.set("G: -  D: -  H: -")  # [PATCH2]
+        self.laser_label.set(f"추천 실: {laser}")  # [PATCH2]
+        self.overlay.update_text(phase, display_gauge, laser)  # [PATCH2]
         self._schedule_loop()
 
     def _read_gauge(self) -> Optional[Gauge]:
         # OCR로 게이지 숫자 읽기
+        # [PATCH2] OCR raw 읽기만 수행 (history는 채택된 gauge에서만 누적)
         gx1, gy1, gx2, gy2 = self.roi_data["gauge_roi"]
         width = gx2 - gx1
         height = gy2 - gy1
@@ -422,7 +497,8 @@ class App(tk.Tk):
             frame = np.array(sct.grab(monitor))
         frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
         values = {}
-        for key, rect in self.roi_data["digit_rois"].items():
+        for key in ("G", "D", "H"):  # [PATCH2]
+            rect = self.roi_data["digit_rois"].get(key)  # [PATCH2]
             if not rect:
                 return None
             x1, y1, x2, y2 = rect
@@ -440,23 +516,27 @@ class App(tk.Tk):
             if value < 0 or value > 1000:
                 return None
             values[key] = value
-        for key, value in values.items():
-            self._history[key].append(value)
-        if not all(self._history[key] for key in ("G", "D", "H")):
-            return None
-        median_values = {
-            key: int(np.median(list(self._history[key]))) for key in ("G", "D", "H")
-        }
-        return Gauge(median_values["G"], median_values["D"], median_values["H"])
+        return Gauge(values["G"], values["D"], values["H"])  # [PATCH2]
 
     @staticmethod
     def _preprocess_for_ocr(img: np.ndarray) -> np.ndarray:
         # OCR 전처리
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        blur = cv2.GaussianBlur(gray, (3, 3), 0)
-        _, thresh = cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-        thresh = cv2.dilate(thresh, np.ones((2, 2), np.uint8), iterations=1)
-        return thresh
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)  # [PATCH2]
+        scale = 2.5  # [PATCH2]
+        gray = cv2.resize(  # [PATCH2]
+            gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC  # [PATCH2]
+        )  # [PATCH2]
+        blur = cv2.GaussianBlur(gray, (3, 3), 0)  # [PATCH2]
+        _, thresh = cv2.threshold(  # [PATCH2]
+            blur, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU  # [PATCH2]
+        )  # [PATCH2]
+        white_ratio = np.mean(thresh == 255)  # [PATCH2]
+        if white_ratio > 0.7:  # [PATCH2]
+            thresh = 255 - thresh  # [PATCH2]
+        kernel = np.ones((2, 2), np.uint8)  # [PATCH2]
+        thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel, iterations=1)  # [PATCH2]
+        thresh = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel, iterations=1)  # [PATCH2]
+        return thresh  # [PATCH2]
 
     @staticmethod
     def _capture_screen() -> Image.Image:
