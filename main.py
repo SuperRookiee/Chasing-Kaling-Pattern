@@ -1,6 +1,7 @@
 import json
 import os
 import tkinter as tk
+from tkinter import ttk
 from collections import deque
 from dataclasses import dataclass
 from tkinter import messagebox
@@ -130,9 +131,15 @@ PHASE_ALLOWED_COLORS: Dict[str, Tuple[Color, ...]] = {
     "2": ("RED", "GREEN", "YELLOW"),
     "3": ("RED", "GREEN", "YELLOW"),
 }
-PREP_TARGETS: Dict[str, Gauge] = {
-    "1-HONDON": Gauge(G=900, D=100, H=500),
-    "1-DOOL": Gauge(G=100, D=500, H=900),
+PHASE1_LIST = ("1-HONDON", "1-DOOL", "1-GUNGGI")
+PHASE1_LABELS = {
+    "1-HONDON": "혼돈",
+    "1-DOOL": "도올",
+    "1-GUNGGI": "궁기",
+}
+PREP_TARGETS2: Dict[Tuple[str, str], Gauge] = {
+    ("1-HONDON", "1-DOOL"): Gauge(G=900, D=100, H=500),
+    ("1-DOOL", "1-GUNGGI"): Gauge(G=100, D=500, H=900),
 }
 
 ROI_PATH = "roi_config.json"
@@ -298,17 +305,21 @@ class App(tk.Tk):
         self.phase_var = tk.StringVar(value="1-HONDON")
         self.gauge_label = tk.StringVar(value="G: -  D: -  H: -")
         self.laser_label = tk.StringVar(value="추천 실: -")
-        self.mode_label = tk.StringVar(value="모드: STABLE  |  1페 카운트: 0/3")
+        self.mode_label = tk.StringVar(value="모드: STABLE  |  현재: 1-HONDON")
+        self.phase1_status_var = tk.StringVar(
+            value="완료: - / 남은: 혼돈, 도올, 궁기 / 다음: -"
+        )
         self.stable_var = tk.BooleanVar(value=True)
-        self._phase1_count = 0
-        self._last_phase: Optional[str] = None
-        self._phase_tracking_started = False
+        self._phase1_done: set[str] = set()
+        self._phase1_current: Optional[str] = self.phase_var.get()
+        self._phase1_next_choice: Optional[str] = None
         self._last_good_gauge: Optional[Gauge] = None
         self._last_good_laser: Optional[str] = None
         self._pending_gauge: Optional[Gauge] = None  # [PATCH2]
 
         self.phase_var.trace_add("write", self._on_phase_change)
         self._build_ui()
+        self._update_phase1_status()
         self.overlay = Overlay(self, self.roi_data.get("overlay_pos", {"x": 200, "y": 200}))
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
@@ -369,9 +380,32 @@ class App(tk.Tk):
         )
         tk.Button(
             action_frame,
-            text="페이즈 리셋(1페 카운트 초기화)",
+            text="페이즈 리셋(1페 초기화)",
             command=self.reset_phase_progress,
         ).pack(fill=tk.X, padx=8, pady=4)
+        tk.Button(
+            action_frame,
+            text="현재 페이즈 완료(1페 확정)",
+            command=self.complete_current_phase1,
+        ).pack(fill=tk.X, padx=8, pady=4)
+
+        next_frame = tk.Frame(action_frame)
+        next_frame.pack(fill=tk.X, padx=8, pady=(2, 6))
+        tk.Label(next_frame, text="다음 페이즈:").pack(side=tk.LEFT)
+        self.phase1_next_var = tk.StringVar(value="-")
+        self.phase1_next_combo = ttk.Combobox(
+            next_frame,
+            textvariable=self.phase1_next_var,
+            values=["-"],
+            state="readonly",
+            width=12,
+        )
+        self.phase1_next_combo.pack(side=tk.LEFT, padx=6)
+        self.phase1_move_button = tk.Button(
+            next_frame, text="선택한 페이즈로 이동", command=self.move_to_next_phase1
+        )
+        self.phase1_move_button.pack(side=tk.LEFT, padx=6)
+        self.phase1_move_button.config(state=tk.DISABLED)
 
         status_frame = tk.LabelFrame(self, text="상태")
         status_frame.pack(fill=tk.BOTH, expand=True, padx=12, pady=8)
@@ -385,6 +419,9 @@ class App(tk.Tk):
         self.laser_value_label.pack(anchor=tk.W, padx=10, pady=6)
         tk.Label(status_frame, textvariable=self.mode_label, font=("Arial", 10)).pack(
             anchor=tk.W, padx=10, pady=(2, 8)
+        )
+        tk.Label(status_frame, textvariable=self.phase1_status_var, font=("Arial", 10)).pack(
+            anchor=tk.W, padx=10, pady=(0, 8)
         )
 
     def set_gauge_roi(self):
@@ -442,8 +479,7 @@ class App(tk.Tk):
             return
         if self.running:
             return
-        self._phase_tracking_started = True
-        self._last_phase = self.phase_var.get()
+        self._phase1_current = self.phase_var.get()
         self.running = True
         self._schedule_loop()
 
@@ -513,10 +549,12 @@ class App(tk.Tk):
                     prep_target = None
                     if (
                         not stable_mode
-                        and phase in PREP_TARGETS
-                        and self._phase1_count < 3
+                        and phase in PHASE1_LIST
+                        and self._phase1_next_choice
                     ):
-                        prep_target = PREP_TARGETS[phase]
+                        prep_target = PREP_TARGETS2.get(
+                            (phase, self._phase1_next_choice)
+                        )
                     if stable_mode and is_stable(gauge):  # [PATCH2]
                         # [PATCH] 안정 상태에서는 추천 계산을 건너뛰고 HOLD 표시
                         self._last_good_laser = "HOLD"  # [PATCH2]
@@ -546,10 +584,11 @@ class App(tk.Tk):
         color_map = {"RED": "#e53935", "GREEN": "#43a047", "YELLOW": "#fbc02d"}
         self.laser_value_label.config(fg=color_map.get(laser, "black"))
         mode_tag = "STABLE" if self.stable_var.get() else "PREP"
-        is_phase1 = phase in ("1-HONDON", "1-DOOL", "1-GUNGGI")
-        p1_suffix = f" P1:{self._phase1_count}" if is_phase1 else ""
-        self.mode_label.set(f"모드: {mode_tag}  |  1페 카운트: {self._phase1_count}/3")
-        self.overlay.update_text(f"{phase} [{mode_tag}]{p1_suffix}", display_gauge, laser)  # [PATCH2]
+        self.mode_label.set(f"모드: {mode_tag}  |  현재: {phase}")
+        overlay_phase = f"{phase} [{mode_tag}]"
+        if self._phase1_next_choice:
+            overlay_phase = f"{overlay_phase} → NEXT: {self._phase1_next_choice}"
+        self.overlay.update_text(overlay_phase, display_gauge, laser)  # [PATCH2]
         self._schedule_loop()
 
     def _read_gauge(self) -> Optional[Gauge]:
@@ -617,24 +656,69 @@ class App(tk.Tk):
         return Image.fromarray(frame)
 
     def _on_phase_change(self, *_args):
-        if not self._phase_tracking_started:
-            return
-        phase = self.phase_var.get()
-        if phase == self._last_phase:
-            return
-        self._last_phase = phase
-        if phase in ("1-HONDON", "1-DOOL", "1-GUNGGI"):
-            self._phase1_count += 1
+        self._phase1_current = self.phase_var.get()
+        self._update_phase1_status()
 
     def reset_phase_progress(self):
-        self._phase1_count = 0
-        self._last_phase = self.phase_var.get()
+        self._phase1_done = set()
+        self._phase1_next_choice = None
+        self._phase1_current = self.phase_var.get()
+        self.phase1_next_var.set("-")
+        self.phase1_next_combo.config(values=["-"])
+        self.phase1_move_button.config(state=tk.DISABLED)
         for key in ("G", "D", "H"):
             self._history[key].clear()
         self._pending_gauge = None
-        mode_tag = "STABLE" if self.stable_var.get() else "PREP"
-        self.mode_label.set(f"모드: {mode_tag}  |  1페 카운트: {self._phase1_count}/3")
-        messagebox.showinfo("알림", "1페 카운트가 초기화되었습니다.")
+        self._update_phase1_status()
+        messagebox.showinfo("알림", "1페 진행이 초기화되었습니다.")
+
+    def complete_current_phase1(self):
+        phase = self.phase_var.get()
+        if phase not in PHASE1_LIST:
+            messagebox.showwarning("경고", "1페 흉수에서만 사용할 수 있습니다.")
+            return
+        if phase in self._phase1_done:
+            messagebox.showinfo("알림", "이미 완료 처리된 흉수입니다.")
+            return
+        self._phase1_done.add(phase)
+        self._update_phase1_status()
+        self._refresh_phase1_next_options()
+
+    def move_to_next_phase1(self):
+        chosen_phase = self.phase1_next_var.get()
+        if chosen_phase in ("", "-"):
+            return
+        self._phase1_next_choice = chosen_phase
+        self.phase_var.set(chosen_phase)
+        self._update_phase1_status()
+
+    def _refresh_phase1_next_options(self):
+        remaining = [p for p in PHASE1_LIST if p not in self._phase1_done]
+        if not remaining:
+            self.phase1_next_combo.config(values=["-"])
+            self.phase1_next_var.set("-")
+            self.phase1_move_button.config(state=tk.DISABLED)
+            messagebox.showinfo("알림", "1페 흉수 3개 완료. 2페로 진행하세요.")
+            return
+        self.phase1_next_combo.config(values=remaining)
+        if len(remaining) == 1:
+            self.phase1_next_var.set(remaining[0])
+        else:
+            if self.phase1_next_var.get() not in remaining:
+                self.phase1_next_var.set(remaining[0])
+        self.phase1_move_button.config(state=tk.NORMAL)
+
+    def _update_phase1_status(self):
+        if self._phase1_next_choice in self._phase1_done:
+            self._phase1_next_choice = None
+        done_list = [PHASE1_LABELS[p] for p in PHASE1_LIST if p in self._phase1_done]
+        remaining_list = [PHASE1_LABELS[p] for p in PHASE1_LIST if p not in self._phase1_done]
+        done_text = ", ".join(done_list) if done_list else "-"
+        remaining_text = ", ".join(remaining_list) if remaining_list else "-"
+        next_text = PHASE1_LABELS.get(self._phase1_next_choice, "-")
+        self.phase1_status_var.set(
+            f"완료: {done_text} / 남은: {remaining_text} / 다음: {next_text}"
+        )
 
     def _on_close(self):
         # 종료 시 상태 저장 및 정리
