@@ -16,13 +16,14 @@
 - **게이지 OCR**: mss + OpenCV 전처리 + Tesseract OCR
 - **실 추천 로직**: 규칙 기반 시뮬레이션 + depth=2 lookahead
 - **오버레이 표시**: 항상 위/반투명/드래그 가능
+- **다크/라이트 테마**: System/Dark/Light 토글
 
 ## 실행 환경
 
-- **OS**: Windows 10/11 기준
+- **OS**: Windows 10/11, macOS
 - **Python**: 3.9 이상 권장
 - **필수 라이브러리**:
-  - tkinter (기본 포함)
+  - customtkinter
   - mss
   - opencv-python
   - pillow
@@ -37,13 +38,13 @@
 2) **필수 패키지 설치**
 
 ```bash
-pip install mss opencv-python pillow pytesseract numpy
+pip install customtkinter mss opencv-python pillow pytesseract numpy
 ```
 
 3) **Tesseract 설치 및 경로 설정**
    - Windows용 Tesseract 설치 후 경로 확인
    - 기본 경로 예시: `C:\Program Files\Tesseract-OCR\tesseract.exe`
-   - `main.py` 상단의 `TESSERACT_CMD` 값을 자신의 설치 경로로 수정
+   - `core.py` 상단의 `TESSERACT_CMD` 값을 자신의 설치 경로로 수정
 
 ## 실행 방법
 
@@ -57,17 +58,48 @@ python main.py
 2. **숫자 ROI 지정(G→D→H)** 클릭 → 게이지 내부 숫자 영역을 순서대로 선택
 3. **Start** 클릭
 
-## 사용 방법
+## UI 페이지 안내 및 기능 연결
 
-- **페이즈 버튼 설명**
-  - 현재 방/페이즈를 직접 선택합니다. 자동 판별은 하지 않습니다.
+| 페이지 | UI 요소 | 연결된 기존 기능 |
+| --- | --- | --- |
+| Dashboard | Start/Stop | `App.start()` / `App.stop()` (기존 루프 유지) |
+| Dashboard | 페이즈 리셋/완료 | `reset_phase_progress()` / `complete_current_phase1()` |
+| Dashboard | OCR 표시/추천 실 | `GaugeService.process_frame()` + `choose_best_laser()` |
+| ROI / Capture | 게이지 ROI 지정 | `set_gauge_roi()` → `RoiSelector` |
+| ROI / Capture | 숫자 ROI 지정 | `set_digit_rois()` → `RoiSelector` |
+| ROI / Capture | ROI 저장/불러오기 | `save_roi_data()` / `load_roi_data()` |
+| Debug | OCR 이미지/텍스트 | `GaugeService._read_gauge(debug=True)` 결과 표시 |
+| Strategy | 시뮬레이션 | `choose_best_laser()` 호출 |
 
-- **ROI 재지정 방법**
-  - 버튼을 다시 눌러 새 ROI를 지정하면 즉시 반영됩니다.
+## 코드 구조
 
-- **오버레이 이동 방법**
-  - 오버레이 창을 마우스로 드래그하여 위치 이동 가능
-  - 종료 시 위치 저장
+- `core.py`: 캡처/OCR/전략/ROI 데이터 처리 (기능 로직)
+- `ui_app.py`: CustomTkinter UI 및 화면 구성 (뷰)
+- `main.py`: 실행 진입점
+
+## macOS 참고 사항
+
+- macOS에서는 기본적으로 시스템 폰트가 자동 적용됩니다.
+- 고해상도 디스플레이에서 텍스트가 작으면 CustomTkinter의 스케일링을 사용할 수 있습니다:
+
+```python
+import customtkinter as ctk
+ctk.set_widget_scaling(1.0)
+```
+
+## PyInstaller 패키징
+
+### Windows
+
+```bash
+pyinstaller --noconsole --onefile --name kaling-helper main.py
+```
+
+### macOS
+
+```bash
+pyinstaller --noconsole --onefile --name kaling-helper main.py
+```
 
 ## 주의사항
 
